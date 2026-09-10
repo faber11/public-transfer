@@ -1,5 +1,47 @@
 # public-transfer
 
+setzen des Parameters in JobDSL
+```
+job('example-job') {
+    parameters {
+        stringParam('ENVIRONMENT', 'dev', 'Target environment')
+        stringParam('VERSION', '', 'Version to deploy')
+    }
+
+    steps {
+        scriptlerScript('my-script.groovy') {
+            propagateParams(true)
+        }
+    }
+}
+```
+
+```
+job('example-job') {
+
+    parameters {
+        stringParam('ENVIRONMENT', 'dev', 'Target environment')
+        stringParam('VERSION', '', 'Version to deploy')
+    }
+
+    steps {
+        configure { project ->
+
+            def builders = project / builders
+
+            builders.appendNode(
+                'org.jenkinsci.plugins.scriptler.builder.ScriptlerBuilder'
+            ).with {
+                appendNode('builderId', 'scriptler')
+                appendNode('scriptId', 'my-script.groovy')
+                appendNode('propagateParams', 'true')
+                appendNode('parameters')
+            }
+        }
+    }
+}
+```
+
 ```
 Conditional steps (multiple)
 │
