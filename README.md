@@ -1,257 +1,459 @@
 # public-transfer
 
-#1:
+#1: 2026-09-15T09:37:00+02:00
 
-Ja. Beim **Maven Release Plugin** gibt es einige typische Ursachen, warum bei `release:prepare` bzw. einem Versionswechsel Module nicht korrekt erkannt werden und deren Version in den `pom.xml` Dateien nicht angepasst wird.
+Ja, Andreas. Für ein Maven-Multi-Module-Projekt, bei dem **alle Module gemeinsam dieselbe Version haben**, würde ich die Version ausschließlich über die Parent-POM steuern. Die Submodule erben ihre eigene Projektversion vom Parent; lediglich die `<parent><version>` muss in jedem Submodul explizit stehen.
 
-Besonders häufig sind diese Ursachen:
+Das passt sehr gut zum `maven-release-plugin`. Aktuell ist Version **3.3.1** des Plugins dokumentiert. Für Multi-Module-Projekte gibt es `autoVersionSubmodules=true`, wodurch Release- und nächste Development-Version für alle Module gemeinsam gesetzt werden. ([Apache Maven][1])
 
-* **Module sind nicht Teil des Maven-Reaktors.** Wenn ein Modul zwar im Repository liegt, aber nicht über `<modules>` vom Parent/Aggregator eingebunden ist, betrachtet das Release Plugin es nicht als Teil des Builds. Beispiel:
-
-  ```xml
-  <modules>
-      <module>module-a</module>
-      <module>module-b</module>
-  </modules>
-  ```
-
-  Fehlt `module-c`, wird dessen `pom.xml` normalerweise auch nicht aktualisiert.
-
-* **Parent und Aggregator werden verwechselt.** Ein Maven-Projekt kann einen Parent haben, ohne dass dieser Parent das Modul über `<modules>` aggregiert. Das Release Plugin arbeitet im Wesentlichen mit dem Maven-Reaktor. Eine Parent-Beziehung allein bedeutet also nicht automatisch, dass Maven das Modul beim Release mitverarbeitet.
-
-* **Falscher Einstiegspunkt für `release:prepare`.** Wenn du beispielsweise innerhalb eines Submoduls startest:
-
-  ```bash
-  cd module-a
-  mvn release:prepare
-  ```
-
-  sieht Maven möglicherweise nur dieses Modul. Bei einem Multi-Module-Projekt solltest du den Release normalerweise auf dem obersten Aggregator-POM starten:
-
-  ```bash
-  mvn release:prepare
-  ```
-
-* **Versionsnummer wird über Properties definiert.** Ein sehr häufiger Sonderfall ist etwa:
-
-  ```xml
-  <version>${revision}</version>
-
-  <properties>
-      <revision>1.2.3-SNAPSHOT</revision>
-  </properties>
-  ```
-
-  Solche sogenannten CI-friendly Versions (`revision`, `sha1`, `changelist`) werden vom Maven Release Plugin je nach Plugin-/Maven-Version und Projektaufbau nicht genauso behandelt wie eine direkt eingetragene `<version>1.2.3-SNAPSHOT</version>`. Auch eigene Properties wie:
-
-  ```xml
-  <properties>
-      <project.version>1.2.3-SNAPSHOT</project.version>
-  </properties>
-  ```
-
-  können dazu führen, dass das Release Plugin die erwartete Stelle nicht verändert.
-
-* **Module referenzieren den Parent mit einer Property-Version.** Problematisch können Konstrukte wie dieses sein:
-
-  ```xml
-  <parent>
-      <groupId>com.example</groupId>
-      <artifactId>parent</artifactId>
-      <version>${revision}</version>
-  </parent>
-  ```
-
-  Maven hat bei Parent-Versionen historisch strengere Regeln als bei normalen Dependencies. Je nach Maven-Version und Aufbau kann das Release Plugin solche Beziehungen nicht sauber auflösen oder umschreiben.
-
-* **`relativePath` zeigt auf den falschen Parent.** Beispiel:
-
-  ```xml
-  <parent>
-      <groupId>com.example</groupId>
-      <artifactId>parent</artifactId>
-      <version>1.0-SNAPSHOT</version>
-      <relativePath>../pom.xml</relativePath>
-  </parent>
-  ```
-
-  Wenn `../pom.xml` nicht der erwartete Parent ist oder ein Zwischen-Parent existiert, kann Maven ein anderes Modell auflösen als du erwartest. Besonders bei verschachtelten Multi-Module-Projekten führt das zu schwer nachvollziehbaren Release-Effekten.
-
-* **`groupId`, `artifactId` oder Version stimmen zwischen Parent und Modul nicht exakt überein.** Beispiel Parent:
-
-  ```xml
-  <groupId>com.company</groupId>
-  <artifactId>my-parent</artifactId>
-  <version>1.5.0-SNAPSHOT</version>
-  ```
-
-  aber Modul:
-
-  ```xml
-  <parent>
-      <groupId>com.company</groupId>
-      <artifactId>my-parent</artifactId>
-      <version>1.4.0-SNAPSHOT</version>
-  </parent>
-  ```
-
-  Dann betrachtet Maven das unter Umständen nicht als dieselbe Reaktorbeziehung, die du erwartest.
-
-* **Das Modul verwendet eine explizite eigene Version.** Zum Beispiel:
-
-  ```xml
-  <parent>
-      <groupId>com.example</groupId>
-      <artifactId>parent</artifactId>
-      <version>1.0.0-SNAPSHOT</version>
-  </parent>
-
-  <artifactId>module-a</artifactId>
-  <version>4.2.0-SNAPSHOT</version>
-  ```
-
-  Das Modul hat damit einen eigenen Release-Zyklus. Das Release Plugin kann diese Version separat behandeln. Je nach gewählten Parametern entsteht dann leicht der Eindruck, dass die Version "nicht mit hochgesetzt" wurde.
-
-* **Unterschiedliche Versionsstände innerhalb des Reaktors.** Zum Beispiel:
-
-  ```text
-  parent        1.5.0-SNAPSHOT
-  module-a      1.5.0-SNAPSHOT
-  module-b      1.4.2-SNAPSHOT
-  ```
-
-  Gerade wenn `autoVersionSubmodules` nicht aktiviert ist, kann Maven nach Versionen fragen oder Module unterschiedlich behandeln.
-
-Ein sehr wichtiger Parameter ist deshalb:
-
-```xml
-<plugin>
-    <groupId>org.apache.maven.plugins</groupId>
-    <artifactId>maven-release-plugin</artifactId>
-    <configuration>
-        <autoVersionSubmodules>true</autoVersionSubmodules>
-    </configuration>
-</plugin>
-```
-
-Damit übernimmt das Release Plugin für Submodule automatisch dieselbe Versionsstrategie. Auf der Kommandozeile geht entsprechend:
-
-```bash
-mvn release:prepare \
-  -DautoVersionSubmodules=true
-```
-
-Auch **Profile** können die Ursache sein. Wenn Module nur innerhalb eines Profils definiert sind:
-
-```xml
-<profiles>
-    <profile>
-        <id>special-modules</id>
-        <modules>
-            <module>module-c</module>
-        </modules>
-    </profile>
-</profiles>
-```
-
-und du den Release ohne das Profil startest:
-
-```bash
-mvn release:prepare
-```
-
-existiert `module-c` aus Sicht des Maven-Reaktors gar nicht. Dann müsste beispielsweise gelten:
-
-```bash
-mvn -Pspecial-modules release:prepare
-```
-
-Ein weiterer häufiger Fall sind **interne Dependencies zwischen Modulen**. Beispiel:
-
-```xml
-<dependency>
-    <groupId>com.example</groupId>
-    <artifactId>module-a</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-</dependency>
-```
-
-Normalerweise erkennt das Release Plugin solche Reaktor-Abhängigkeiten und ersetzt sie durch die Release-Version. Werden Versionen aber über Properties angegeben:
-
-```xml
-<dependency>
-    <groupId>com.example</groupId>
-    <artifactId>module-a</artifactId>
-    <version>${module-a.version}</version>
-</dependency>
-
-<properties>
-    <module-a.version>1.0.0-SNAPSHOT</module-a.version>
-</properties>
-```
-
-kann die Aktualisierung komplizierter werden. Das Plugin muss dann erkennen, dass diese Property ausschließlich bzw. tatsächlich diese Reaktor-Abhängigkeit repräsentiert.
-
-Sehr hilfreich zur Diagnose ist zunächst:
-
-```bash
-mvn help:effective-pom
-```
-
-und:
-
-```bash
-mvn validate
-```
-
-Außerdem würde ich einmal prüfen, welche Projekte Maven tatsächlich in den Reaktor nimmt:
-
-```bash
-mvn clean install -DskipTests
-```
-
-Am Anfang der Ausgabe steht normalerweise etwas wie:
+### Projektstruktur
 
 ```text
-Reactor Build Order:
-
-my-parent
-module-a
-module-b
-module-c
+my-project/
+├── pom.xml
+├── module-api/
+│   └── pom.xml
+├── module-core/
+│   └── pom.xml
+└── module-app/
+    └── pom.xml
 ```
 
-Wenn das problematische Modul **dort bereits fehlt**, liegt das Problem fast sicher nicht primär am Maven Release Plugin, sondern am Maven-Projektaufbau, `<modules>`, Profilen oder dem Ort, von dem der Maven-Aufruf gestartet wird.
-
-Wenn das Modul hingegen **im Reactor Build Order auftaucht, aber `release:prepare` seine Version trotzdem nicht ändert**, würde ich als Nächstes speziell diese Punkte untersuchen:
-
-1. `<version>` des Moduls und seines Parents
-2. Verwendung von `${revision}`, `${changelist}` oder eigenen Version-Properties
-3. `autoVersionSubmodules`
-4. `relativePath`
-5. interne Dependency-Versionen
-6. aktive Maven-Profile
-7. verwendete Version von `maven-release-plugin`
-8. Inhalt von `release.properties`
-9. vorher fehlgeschlagene `release:prepare`-Runs
-
-Gerade Punkt 8 und 9 werden oft übersehen. Ein vorheriger Release-Versuch kann Dateien wie
+Angenommen, der Entwicklungsstand ist:
 
 ```text
-release.properties
-pom.xml.releaseBackup
+1.2.0-SNAPSHOT
 ```
 
-hinterlassen. Dann sollte man vor einem neuen Versuch häufig:
+Dann enthält die **Root-/Parent-POM** die eigentliche Projektversion:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>de.example</groupId>
+    <artifactId>my-project</artifactId>
+    <version>1.2.0-SNAPSHOT</version>
+
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>module-api</module>
+        <module>module-core</module>
+        <module>module-app</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <scm>
+        <connection>
+            scm:git:https://github.com/example/my-project.git
+        </connection>
+        <developerConnection>
+            scm:git:https://github.com/example/my-project.git
+        </developerConnection>
+        <url>
+            https://github.com/example/my-project
+        </url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-release-plugin</artifactId>
+                <version>3.3.1</version>
+
+                <configuration>
+                    <autoVersionSubmodules>true</autoVersionSubmodules>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+Eine SCM-Konfiguration mit `developerConnection` sowie eine festgelegte Version des Release-Plugins gehören zur empfohlenen Grundkonfiguration. ([Apache Maven][2])
+
+## Die Submodule
+
+Der entscheidende Punkt ist jetzt, dass die Submodule **keine eigene `<version>`** bekommen.
+
+`module-api/pom.xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.example</groupId>
+        <artifactId>my-project</artifactId>
+        <version>1.2.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>module-api</artifactId>
+
+</project>
+```
+
+`module-core/pom.xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.example</groupId>
+        <artifactId>my-project</artifactId>
+        <version>1.2.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>module-core</artifactId>
+
+    <dependencies>
+        <dependency>
+            <groupId>de.example</groupId>
+            <artifactId>module-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+
+</project>
+```
+
+Und `module-app/pom.xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.example</groupId>
+        <artifactId>my-project</artifactId>
+        <version>1.2.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>module-app</artifactId>
+
+    <dependencies>
+        <dependency>
+            <groupId>de.example</groupId>
+            <artifactId>module-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>de.example</groupId>
+            <artifactId>module-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+
+</project>
+```
+
+Damit ergibt sich effektiv:
+
+```text
+de.example:my-project:1.2.0-SNAPSHOT
+de.example:module-api:1.2.0-SNAPSHOT
+de.example:module-core:1.2.0-SNAPSHOT
+de.example:module-app:1.2.0-SNAPSHOT
+```
+
+Obwohl bei den drei Modulen **keine eigene Projektversion** definiert ist.
+
+Der Parent ist gleichzeitig Parent und Aggregator. Maven unterscheidet diese Konzepte grundsätzlich, aber es ist völlig üblich, dass dieselbe POM beide Rollen übernimmt. ([Apache Maven][3])
+
+### Warum steht trotzdem `1.2.0-SNAPSHOT` dreimal in den Child-POMs?
+
+Das ist eine Eigenheit des Maven-POM-Modells:
+
+```xml
+<parent>
+    ...
+    <version>1.2.0-SNAPSHOT</version>
+</parent>
+```
+
+muss eine Version enthalten.
+
+Das hier geht also nicht:
+
+```xml
+<parent>
+    <groupId>de.example</groupId>
+    <artifactId>my-project</artifactId>
+</parent>
+```
+
+Die gute Nachricht ist: Genau diese Referenzen aktualisiert das Release Plugin für Dich.
+
+Vor dem Release:
+
+```xml
+<parent>
+    ...
+    <version>1.2.0-SNAPSHOT</version>
+</parent>
+```
+
+Beim Release wird daraus temporär:
+
+```xml
+<parent>
+    ...
+    <version>1.2.0</version>
+</parent>
+```
+
+und nach dem Release beispielsweise:
+
+```xml
+<parent>
+    ...
+    <version>1.2.1-SNAPSHOT</version>
+</parent>
+```
+
+Du musst diese Stellen also nicht manuell ändern.
+
+---
+
+## Ein Release durchführen
+
+Aus dem Root-Verzeichnis:
 
 ```bash
-mvn release:clean
+mvn release:clean release:prepare
 ```
 
-ausführen.
+Mit
 
-Wenn du mir deinen **Parent-POM plus 1–2 betroffene Modul-POMs** und den verwendeten `mvn release:prepare ...` Aufruf zeigst, kann ich ziemlich gezielt feststellen, warum genau diese Module beim Versionswechsel ausgelassen werden.
+```xml
+<autoVersionSubmodules>true</autoVersionSubmodules>
+```
 
+fragt Maven nicht für jedes Modul einzeln nach einer Version, sondern verwendet dieselbe Version für das gesamte Projekt. Genau dafür ist diese Option vorgesehen. ([Apache Maven][1])
+
+Bei
+
+```text
+1.2.0-SNAPSHOT
+```
+
+wirst Du sinngemäß gefragt:
+
+```text
+What is the release version?
+1.2.0
+
+What is SCM release tag?
+my-project-1.2.0
+
+What is the new development version?
+1.2.1-SNAPSHOT
+```
+
+`release:prepare` macht dabei im Wesentlichen:
+
+```text
+1. Prüfen, ob Git Working Tree sauber ist
+
+2. POMs:
+   1.2.0-SNAPSHOT
+       ↓
+   1.2.0
+
+3. Release-POMs committen
+
+4. Git Tag erzeugen:
+   my-project-1.2.0
+
+5. POMs:
+   1.2.0
+       ↓
+   1.2.1-SNAPSHOT
+
+6. Development-POMs committen
+```
+
+Dieser grundsätzliche Prepare-Ablauf – POM-Version ändern, committen, SCM-Tag erzeugen und anschließend die nächste Development-Version setzen – ist genau das Modell des Release Plugins. ([Apache Maven][4])
+
+Danach:
+
+```bash
+mvn release:perform
+```
+
+Dabei wird der erzeugte Tag ausgecheckt und typischerweise
+
+```bash
+mvn deploy
+```
+
+darauf ausgeführt.
+
+Für `release:perform` brauchst Du deshalb normalerweise noch ein `distributionManagement`, beispielsweise für Nexus oder Artifactory:
+
+```xml
+<distributionManagement>
+
+    <repository>
+        <id>releases</id>
+        <url>
+            https://nexus.example.de/repository/maven-releases/
+        </url>
+    </repository>
+
+    <snapshotRepository>
+        <id>snapshots</id>
+        <url>
+            https://nexus.example.de/repository/maven-snapshots/
+        </url>
+    </snapshotRepository>
+
+</distributionManagement>
+```
+
+---
+
+## Für CI/CD würde ich es nicht interaktiv machen
+
+Beispielsweise:
+
+```bash
+mvn --batch-mode release:clean release:prepare \
+    -DreleaseVersion=1.2.0 \
+    -DdevelopmentVersion=1.2.1-SNAPSHOT \
+    -Dtag=my-project-1.2.0
+```
+
+danach:
+
+```bash
+mvn --batch-mode release:perform
+```
+
+Das ist wesentlich geeigneter für Jenkins, GitLab CI, GitHub Actions etc.
+
+---
+
+## Ein Detail würde ich noch verbessern: interne Dependencies
+
+Anstatt überall
+
+```xml
+<version>${project.version}</version>
+```
+
+einzutragen, würde ich bei größeren Projekten die internen Modulversionen zentral im Parent unter `dependencyManagement` verwalten:
+
+```xml
+<dependencyManagement>
+    <dependencies>
+
+        <dependency>
+            <groupId>de.example</groupId>
+            <artifactId>module-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>de.example</groupId>
+            <artifactId>module-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+    </dependencies>
+</dependencyManagement>
+```
+
+Dann kann `module-app` einfach schreiben:
+
+```xml
+<dependencies>
+
+    <dependency>
+        <groupId>de.example</groupId>
+        <artifactId>module-api</artifactId>
+    </dependency>
+
+    <dependency>
+        <groupId>de.example</groupId>
+        <artifactId>module-core</artifactId>
+    </dependency>
+
+</dependencies>
+```
+
+Das ergibt meiner Ansicht nach die sauberste Struktur:
+
+```text
+Parent:
+    version = 1.2.0-SNAPSHOT
+
+module-api:
+    Parent = 1.2.0-SNAPSHOT
+    eigene Version = keine
+
+module-core:
+    Parent = 1.2.0-SNAPSHOT
+    eigene Version = keine
+
+module-app:
+    Parent = 1.2.0-SNAPSHOT
+    eigene Version = keine
+```
+
+Beim Release:
+
+```text
+                 development       release        danach
+
+Parent           1.2.0-SNAPSHOT → 1.2.0       → 1.2.1-SNAPSHOT
+module-api       1.2.0-SNAPSHOT → 1.2.0       → 1.2.1-SNAPSHOT
+module-core      1.2.0-SNAPSHOT → 1.2.0       → 1.2.1-SNAPSHOT
+module-app       1.2.0-SNAPSHOT → 1.2.0       → 1.2.1-SNAPSHOT
+                                      │
+                                      └── Git Tag
+                                          my-project-1.2.0
+```
+
+**Wichtig:** Ich würde hier zunächst bewusst **nicht mit `${revision}` / CI-friendly versions** wie
+
+```xml
+<version>${revision}</version>
+```
+
+arbeiten. Das ist ein anderes Versionsmodell und bringt gerade in Kombination mit Release- und Publishing-Workflows zusätzliche Überlegungen hinein. Für einen klassischen Maven-Release-Plugin-Workflow ist eine normale `1.2.0-SNAPSHOT`-Version im Parent sehr transparent und robust.
+
+Ein guter nächster Schritt wäre ein **komplettes, tatsächlich ausführbares Beispielprojekt inklusive Java-Klassen, Nexus/Artifactory-Konfiguration und GitLab-CI/Jenkins-Release-Job**. Dann kann ich Dir auch zeigen, was `release:prepare` konkret an den vier POM-Dateien verändert.
+
+[1]: https://maven.apache.org/maven-release/maven-release-plugin/usage/prepare-release.html?utm_source=chatgpt.com "Prepare a Release – Maven Release plugin"
+[2]: https://maven.apache.org/maven-release/maven-release-plugin/usage.html?utm_source=chatgpt.com "Usage – Maven Release plugin"
+[3]: https://maven.apache.org/pom.html?utm_source=chatgpt.com "POM Reference – Maven"
+[4]: https://maven.apache.org/guides/mini/guide-releasing.html?utm_source=chatgpt.com "Releasing – Maven"
 
 
 
