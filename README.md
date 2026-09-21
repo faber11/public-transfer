@@ -1,5 +1,32 @@
 # public-transfer
 
+
+
+stage('Gate on Critical') {
+  steps {
+    sh '''
+      set -euo pipefail
+      python3 - << 'PY'
+import json, sys
+data = json.load(open('jfrog-audit.json','r',encoding='utf-8'))
+vulns = data.get('vulnerabilities') or data.get('vulns') or []
+crit = [v for v in vulns if str(v.get('severity','')).lower() == 'critical']
+print(f"Critical findings: {len(crit)}")
+if crit:
+    # optional: kurz ausgeben
+    for v in crit[:10]:
+        print(v.get('cve') or v.get('id'), v.get('summary','')[:120])
+    sys.exit(1)
+PY
+    '''
+  }
+}
+
+
+
+--------
+
+
 #1: 2026-09-15T09:37:00+02:00
 
 Ja, Andreas. Für ein Maven-Multi-Module-Projekt, bei dem **alle Module gemeinsam dieselbe Version haben**, würde ich die Version ausschließlich über die Parent-POM steuern. Die Submodule erben ihre eigene Projektversion vom Parent; lediglich die `<parent><version>` muss in jedem Submodul explizit stehen.
