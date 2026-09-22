@@ -1,3 +1,265 @@
+## 2026-09-21
+
+#2: 2026-09-22 14:25
+
+Ja, Andreas. Mit diesen URLs wird die Ursache ziemlich klar: **`https://kaiser.dev.drv` ist sehr wahrscheinlich eure JFrog-Platform-URL**, und genau diese URL sollte für `--url` verwendet werden. JFrog beschreibt `--url` als Basis-URL der JFrog Platform; Artifactory und Xray hängen typischerweise darunter. ([JFrog Docs][1])
+
+Bei euch wäre das voraussichtlich:
+
+```text
+JFrog Platform:
+https://kaiser.dev.drv
+
+Artifactory:
+https://kaiser.dev.drv/artifactory
+
+Xray:
+https://kaiser.dev.drv/xray
+
+Proxy für releases.jfrog.io:
+https://kaiser.dev.drv/artifactory/jfrog-generic-releases-remote
+```
+
+Der Xray-Version-Endpunkt ist laut aktueller JFrog-Dokumentation tatsächlich:
+
+```text
+https://kaiser.dev.drv/xray/api/v1/system/version
+```
+
+([JFrog Docs][2])
+
+Genau diesen Request sollte die JFrog CLI erfolgreich ausführen können.
+
+Der Fehler entsteht wahrscheinlich durch eure jetzige Kombination:
+
+```bash
+jf audit \
+  --mvn \
+  --server-id=xxx \
+  --url=https://kaiser.dev.drv/artifactory/jfrog-generic-releases-remote \
+  ...
+```
+
+Damit sagt ihr der CLI gleichzeitig:
+
+> „Benutze Server `xxx`, aber die JFrog-Platform-URL ist `.../artifactory/jfrog-generic-releases-remote`.“
+
+Daraufhin versucht die CLI ihren Xray-Endpunkt relativ dazu zu bestimmen. Deshalb landet sie sinngemäß bei etwas wie:
+
+```text
+/artifactory/jfrog-generic-releases-remote/.../xray/api/v1/system/version
+```
+
+Das erklärt euren 404 sehr gut.
+
+## So würde ich es konfigurieren
+
+Zunächst die Server-Konfiguration:
+
+```bash
+jf c add xxx \
+  --url=https://kaiser.dev.drv \
+  --user="$JFROG_USER" \
+  --password="$JFROG_PASSWORD" \
+  --interactive=false \
+  --overwrite
+```
+
+JFrog dokumentiert genau dieses Schema: Die `--url` ist die **JFrog Platform URL**, nicht eine Repository-URL. ([JFrog Docs][1])
+
+Ich würde bei euch sogar explizit alle relevanten URLs setzen. Das beseitigt jede Mehrdeutigkeit:
+
+```bash
+jf c add xxx \
+  --url=https://kaiser.dev.drv \
+  --artifactory-url=https://kaiser.dev.drv/artifactory \
+  --xray-url=https://kaiser.dev.drv/xray \
+  --user="$JFROG_USER" \
+  --password="$JFROG_PASSWORD" \
+  --interactive=false \
+  --overwrite
+```
+
+`--artifactory-url` und `--xray-url` sind offizielle Optionen der CLI-Konfiguration. ([JFrog Docs][1])
+
+Danach:
+
+```bash
+jf c show xxx
+```
+
+Dabei sollte sinngemäß herauskommen:
+
+```text
+Server ID:         xxx
+JFrog Platform URL: https://kaiser.dev.drv/
+Artifactory URL:    https://kaiser.dev.drv/artifactory/
+Xray URL:           https://kaiser.dev.drv/xray/
+```
+
+### Und euer Proxy-Repository?
+
+Das ist der zweite, separate Teil.
+
+Euer
+
+```text
+https://kaiser.dev.drv/artifactory/jfrog-generic-releases-remote
+```
+
+wird **nicht als `--url` übergeben**.
+
+Stattdessen:
+
+```bash
+export JFROG_CLI_RELEASES_REPO="xxx/jfrog-generic-releases-remote"
+```
+
+Das ist exakt der von JFrog vorgesehene Mechanismus. Die Dokumentation sagt ausdrücklich, dass `JFROG_CLI_RELEASES_REPO` das Repository angibt, aus dem die von Maven/Gradle benötigten JARs geladen werden. Das Format ist:
+
+```text
+<server-id>/<repository-name>
+```
+
+und das Repository soll `https://releases.jfrog.io` proxyen. Außerdem gilt diese Variable ausdrücklich auch für `jf audit` bei Maven-/Gradle-Projekten. ([JFrog Docs][3])
+
+Dann wird euer Aufruf:
+
+```bash
+export JFROG_CLI_RELEASES_REPO="xxx/jfrog-generic-releases-remote"
+
+jf audit \
+  --mvn \
+  --server-id=xxx \
+  --fail=false \
+  --format=json
+```
+
+**Kein `--url`, `--user` und `--password` mehr beim `jf audit`**, weil das bereits in `xxx` steckt.
+
+## Ich würde als Erstes diesen Test machen
+
+Direkt vom Jenkins-Agenten:
+
+```bash
+curl -vk \
+  -u "$JFROG_USER:$JFROG_PASSWORD" \
+  https://kaiser.dev.drv/xray/api/v1/system/version
+```
+
+Wenn alles korrekt geroutet ist, sollte hier **kein 404** kommen, sondern eine JSON-Antwort mit Xray-Versionsinformationen. Der Endpoint ist offiziell genau so aufgebaut. ([JFrog Docs][2])
+
+Wenn beispielsweise sowas zurückkommt:
+
+```json
+{
+  "xray_version": "...",
+  "xray_revision": "..."
+}
+```
+
+wissen wir:
+
+```text
+Jenkins
+   |
+   v
+https://kaiser.dev.drv
+   |
+   +------ /artifactory ------> Artifactory
+   |
+   +------ /xray -------------> Xray
+```
+
+Dann ist die Sache praktisch geklärt.
+
+Falls dagegen
+
+```bash
+curl https://kaiser.dev.drv/xray/api/v1/system/version
+```
+
+ebenfalls einen `404` liefert, liegt **noch ein zweites Problem im Reverse Proxy / Load Balancer vor**: `/xray` wird dann vermutlich nicht an den JFrog Router bzw. Xray weitergeleitet. Das wäre dann unabhängig vom Remote Repository.
+
+### Für eure Jenkins-Pipeline wäre die Zielkonfiguration also ungefähr
+
+```groovy
+withCredentials([
+    usernamePassword(
+        credentialsId: 'jfrog-credentials',
+        usernameVariable: 'JFROG_USER',
+        passwordVariable: 'JFROG_PASSWORD'
+    )
+]) {
+    sh '''
+        jf c add xxx \
+          --url="https://kaiser.dev.drv" \
+          --artifactory-url="https://kaiser.dev.drv/artifactory" \
+          --xray-url="https://kaiser.dev.drv/xray" \
+          --user="$JFROG_USER" \
+          --password="$JFROG_PASSWORD" \
+          --interactive=false \
+          --overwrite
+
+        export JFROG_CLI_RELEASES_REPO="xxx/jfrog-generic-releases-remote"
+
+        jf audit \
+          --mvn \
+          --server-id=xxx \
+          --fail=false \
+          --format=json
+    '''
+}
+```
+
+Damit sind die beiden Dinge sauber getrennt:
+
+```text
+                   JFrog Platform
+                https://kaiser.dev.drv
+                         |
+            +------------+-------------+
+            |                          |
+            v                          v
+      /artifactory                   /xray
+            |                          |
+            v                          v
+      Artifactory                    Xray
+            |
+            |
+jfrog-generic-releases-remote
+            |
+            v
+   https://releases.jfrog.io
+```
+
+**Ich halte insbesondere das gleichzeitige `--server-id=xxx` und `--url=<Remote-Repo>` in eurem bisherigen `jf audit` für den Kernfehler.** Das Remote Repository gehört in `JFROG_CLI_RELEASES_REPO`; als Platform-URL gehört `https://kaiser.dev.drv` hinein.
+
+Wenn Du mir als Nächstes die Ausgabe von
+
+```bash
+jf c show xxx
+```
+
+und von
+
+```bash
+curl -vk https://kaiser.dev.drv/xray/api/v1/system/version
+```
+
+zeigst (Credentials/Tokens natürlich entfernen), kann man sehr schnell erkennen, ob danach noch ein Reverse-Proxy-/Xray-Routingproblem übrig bleibt.
+
+[1]: https://docs.jfrog.com/integrations/docs/jf-config-add?utm_source=chatgpt.com "Add a JFrog CLI Server Configuration"
+[2]: https://docs.jfrog.com/security/reference/get-version?utm_source=chatgpt.com "Get Version"
+[3]: https://docs.jfrog.com/integrations/docs/jfrog-cli-environment-variables?utm_source=chatgpt.com "JFrog CLI Environment Variables"
+
+
+
+
+-----------------------------------------------------
+
+
+
 # public-transfer
 
 
